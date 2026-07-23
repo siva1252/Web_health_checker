@@ -1,23 +1,33 @@
 @echo off
+cd /d "%~dp0"
+
 echo ==========================================
-echo Starting Web Health Checker Dashboard...
+echo Starting Web Health Checker...
 echo ==========================================
-start "Django Server" cmd /k "python manage.py runserver"
+
+if exist "venv\Scripts\python.exe" (
+    set PYTHON=venv\Scripts\python.exe
+) else (
+    set PYTHON=python
+)
 
 echo.
-echo ==========================================
-echo Starting Professional Background Monitor...
-echo ==========================================
-start "Health Monitor" cmd /k "python background_monitor.py"
+echo [1/2] Starting Django Server...
+start "Django Server" cmd /k "%PYTHON% manage.py runserver"
+
+echo [2/2] Starting Background Monitor...
+start "Health Monitor" cmd /k "%PYTHON% background_monitor.py"
 
 echo.
-echo Both services are now starting. 
-echo - Dashboard: http://127.0.0.1:8000
-echo - Monitoring: Active in background
+echo Both services are starting.
+echo - Dashboard:  http://127.0.0.1:8000
+echo - Monitoring: every 5 minutes (Health Monitor window)
+echo.
+echo Keep BOTH windows open. Close them to stop.
 echo.
 pause
 
 
 
 
-#.\start_all.bat cmnd prompt
+#.\start_all.bat

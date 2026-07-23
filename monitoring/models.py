@@ -212,16 +212,16 @@ class AlertLog(models.Model):
     
     @classmethod
     def should_send_alert(cls, website, alert_type):
-        """Check if we should send an alert (prevent spam)."""
+        """Extra spam guard: skip if same alert type was sent in the cooldown window."""
         from django.utils import timezone
-        
-        # Don't send duplicate alerts within 5 minutes
+
+        cooldown = MonitoringSettings.get_settings().alert_cooldown_minutes
         recent_alert = cls.objects.filter(
             website=website,
             alert_type=alert_type,
-            sent_at__gte=timezone.now() - timedelta(minutes=5)
+            sent_at__gte=timezone.now() - timedelta(minutes=cooldown)
         ).exists()
-        
+
         return not recent_alert
     
     @classmethod

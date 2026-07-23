@@ -7,8 +7,13 @@ from concurrent.futures import ThreadPoolExecutor
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'server_checker.settings')
 django.setup()
 
-from monitoring.models import Website, InternalApp, MonitoringSettings
+from django.conf import settings
+from monitoring.models import Website, InternalApp
 from monitoring.services import MonitoringService
+
+# Check every 5 minutes by default (from .env MONITORING_INTERVAL=300)
+CHECK_INTERVAL = getattr(settings, 'MONITORING_INTERVAL', 300)
+
 
 def check_target(target, is_website=True):
     """Worker function to check a single target in a thread."""
@@ -21,30 +26,31 @@ def check_target(target, is_website=True):
     except Exception as e:
         print(f"Error checking {target.name}: {e}")
 
+
 def run_professional_monitoring():
-    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Starting professional monitoring cycle...", flush=True)
-    
-    # Get active targets
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Starting monitoring cycle...", flush=True)
+
     websites = list(Website.objects.filter(status='active'))
     internal_apps = list(InternalApp.objects.filter(is_active=True, website__status='active'))
-    
-    # Use ThreadPool to check everything in parallel
-    # max_workers=10 ensures we don't overwhelm the local system or SQLite
+
+    # Parallel checks — max_workers=10 so SQLite / target hosts are not overwhelmed
     with ThreadPoolExecutor(max_workers=10) as executor:
         for site in websites:
             executor.submit(check_target, site, True)
         for app in internal_apps:
             executor.submit(check_target, app, False)
 
-    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Cycle completed.", flush=True)
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Cycle completed. Next run in {CHECK_INTERVAL}s.", flush=True)
 
 
-
-#replace this with celery
 if __name__ == "__main__":
     print("--- Professional Health Checker Started ---", flush=True)
-    print("Checking 30+ sites in parallel every 5 minutes.", flush=True)
-    
+    print(
+        f"Interval: every {CHECK_INTERVAL} seconds ({CHECK_INTERVAL // 60} min). "
+        "Email only after 2 consecutive DOWN checks.",
+        flush=True,
+    )
+
     while True:
         run_professional_monitoring()
-        time.sleep(300)
+        time.sleep(CHECK_INTERVAL)

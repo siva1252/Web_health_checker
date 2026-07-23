@@ -2,13 +2,13 @@
 
 https://healthchecks.io/
 
-A comprehensive Django-based server monitoring system that actively monitors your websites and internal applications, tracks their uptime, measures response times, and sends customized email alerts when issues are detected.
+A comprehensive Django-based server monitoring system that actively monitors your websites and internal applications, tracks their uptime, measures response times, and sends email alerts only after **two consecutive failed checks** (checks run every **5 minutes**).
 
 ---
 
 ## 🔍 How we identify if a Server is "UP" or "DOWN"
 
-The core logic of this system relies on a reliable continuous background worker (`background_monitor.py`) that checks your configured servers and applications against an ongoing schedule (usually every 60 seconds).
+The core logic of this system relies on a continuous background worker (`background_monitor.py`) that checks your configured servers every **5 minutes** (`MONITORING_INTERVAL=300`).
 
 ### The server is considered **UP (Online)** when:
 1. A secure networking connection to the server is successfully established.
@@ -20,7 +20,7 @@ The core logic of this system relies on a reliable continuous background worker 
 2. **Invalid Status Code**: The server returns an unexpected status code (e.g., `500 Internal Server Error`, `502 Bad Gateway`, `401 Unauthorized` or `404 Not Found`).
 3. **Connection error**: The server actively refuses the connection, drops packets, or a DNS resolution fails entirely.
 
-When a server transitions to **DOWN**, the system captures the exact raw response code, logs the timeout instance, and immediately dispatches an email alert to the platform's administrator ensuring visibility of the breakdown.
+When a server transitions to **DOWN**, the first failure is logged only. If the next 5-minute check is still DOWN, the system dispatches a confirmed downtime email so short blips do not spam your inbox.
 
 ---
 

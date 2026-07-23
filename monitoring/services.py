@@ -116,42 +116,49 @@ class MonitoringService:
             self.handle_internal_app_alerts(internal_app, check)
             return check
     
+    def _count_consecutive_failures(self, queryset):
+        """Count how many latest checks in a row were offline."""
+        consecutive_failures = 0
+        for c in queryset:
+            if not c.is_online:
+                consecutive_failures += 1
+            else:
+                break
+        return consecutive_failures
+
     def handle_website_alerts(self, website, check):
-        # Suppress alerts if website is not active (e.g., maintenance or inactive)
+        """
+        Two-strike rule (every check is 5 minutes apart):
+        1st DOWN  → log only, do NOT email (could be a blip)
+        2nd DOWN  → confirmed outage → send email once
+        3rd+ DOWN → stay silent until the site recovers and fails again
+        """
         if website.status != 'active':
             return
-            
+
         if not check.is_online:
-            # Get up to the last 20 checks to find consecutive failures
             recent_checks = MonitoringCheck.objects.filter(
                 website=website,
                 internal_app__isnull=True
             ).order_by('-check_time')[:20]
-            
-            consecutive_failures = 0
-            for c in recent_checks:
-                if not c.is_online:
-                    consecutive_failures += 1
-                else:
-                    break
-                    
-            # (Requires 2 consecutive failures to trigger an alert - i.e. 5 minutes)
-            should_alert = consecutive_failures >= 2
-                
-            # Website is down - send alert only if it's been down for two consecutive checks
-            if should_alert and AlertLog.should_send_alert(website, 'down'):
-                subject = f"🚨 URGENT: {website.name} is DOWN"
+
+            consecutive_failures = self._count_consecutive_failures(recent_checks)
+
+            # Exactly 2 = just confirmed down after waiting one more 5-min cycle
+            if consecutive_failures == 2 and AlertLog.should_send_alert(website, 'down'):
+                subject = f"URGENT: {website.name} is DOWN"
                 message = f"""
 Dear Administrator,
 
-Monitoring Alert: {website.name} is currently DOWN.
+Monitoring Alert: {website.name} is confirmed DOWN.
 
-Our monitoring system has detected that your website is unreachable.
+The site failed two consecutive health checks (about 10 minutes).
+A single failure is ignored to avoid false alarms.
 
 Website Details:
 - Name: {website.name}
 - URL: {website.url}
-- Detected at: {check.check_time.strftime('%Y-%m-%d %H:%M:%S UTC')}
+- Confirmed at: {check.check_time.strftime('%Y-%m-%d %H:%M:%S UTC')}
 - Error Details: {check.error_message}
 
 Please investigate this issue immediately to restore services.
@@ -159,7 +166,7 @@ Please investigate this issue immediately to restore services.
 Best regards,
 Web Health Checker System
                 """
-                
+
                 AlertLog.send_alert(
                     website=website,
                     alert_type='down',
@@ -167,46 +174,35 @@ Web Health Checker System
                     message=message,
                     email_to=website.alert_email
                 )
-        else:
-            # Website is online - nothing to do here as per user request
-            pass
-    
+        # Online: recovery email not implemented yet (future improvement)
+
     def handle_internal_app_alerts(self, internal_app, check):
-        # Suppress alerts if internal app's website is not active
+        """Same two-strike rule as websites, scoped to one internal app."""
         if internal_app.website.status != 'active':
             return
-            
+
         if not check.is_online:
-            # Get up to the last 20 checks to find consecutive failures
             recent_checks = MonitoringCheck.objects.filter(
                 internal_app=internal_app
             ).order_by('-check_time')[:20]
-            
-            consecutive_failures = 0
-            for c in recent_checks:
-                if not c.is_online:
-                    consecutive_failures += 1
-                else:
-                    break
-                    
-            # Only alert if there are at least 2 consecutive failures
-            should_alert = consecutive_failures >= 2
-                
-            # Internal app is down - send alert only if it's been down for two consecutive checks
-            if should_alert and AlertLog.should_send_alert(internal_app.website, 'down'):
-                subject = f"🚨 URGENT: Internal App {internal_app.name} is DOWN"
+
+            consecutive_failures = self._count_consecutive_failures(recent_checks)
+
+            if consecutive_failures == 2 and AlertLog.should_send_alert(internal_app.website, 'down'):
+                subject = f"URGENT: Internal App {internal_app.name} is DOWN"
                 message = f"""
 Dear Administrator,
 
-Monitoring Alert: The internal app '{internal_app.name}' on {internal_app.website.name} is currently DOWN.
+Monitoring Alert: The internal app '{internal_app.name}' on {internal_app.website.name} is confirmed DOWN.
 
-Our monitoring system has detected that this component is unreachable.
+It failed two consecutive health checks (about 10 minutes).
+A single failure is ignored to avoid false alarms.
 
 Component Details:
 - Internal App: {internal_app.name} ({internal_app.app_type})
 - Website: {internal_app.website.name}
 - URL: {internal_app.url}
-- Detected at: {check.check_time.strftime('%Y-%m-%d %H:%M:%S UTC')}
+- Confirmed at: {check.check_time.strftime('%Y-%m-%d %H:%M:%S UTC')}
 - Error Details: {check.error_message}
 
 Please investigate this issue immediately.
@@ -214,7 +210,7 @@ Please investigate this issue immediately.
 Best regards,
 Web Health Checker System
                 """
-                
+
                 AlertLog.send_alert(
                     website=internal_app.website,
                     alert_type='down',
@@ -222,9 +218,6 @@ Web Health Checker System
                     message=message,
                     email_to=internal_app.website.alert_email
                 )
-        else:
-            # Internal app is online - nothing to do here
-            pass
     
     def run_monitoring_cycle(self):
         if not self.settings.is_monitoring_active:

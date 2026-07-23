@@ -40,7 +40,7 @@ Ee project lo **rendu separate programs** run avtayi. Idi interview lo chala imp
 
 **First process — Django Web Server:** Iddi browser lo dashboard chupinchadaniki. User website add cheyochu, edit cheyochu, stats chudochu. Port 8000 lo run avtundi. `manage.py runserver` command tho start avtundi.
 
-**Second process — Background Monitor:** Iddi actual monitoring chese worker. `background_monitor.py` file run avtundi. Prathi 60 seconds ki anni active websites ni check chestundi. 10 sites parallel ga check avtayi — slow avvakunda. Ee process separate ga run avvali — lekapothe dashboard slow avtundi.
+**Second process — Background Monitor:** Iddi actual monitoring chese worker. `background_monitor.py` file run avtundi. **Prathi 5 minutes (300 seconds)** ki anni active websites ni check chestundi — value `.env` lo `MONITORING_INTERVAL=300` nundi vastundi. 10 sites parallel ga check avtayi — slow avvakunda. Ee process separate ga run avvali — lekapothe dashboard slow avtundi.
 
 Rendu processes okate database (`db.sqlite3`) use chestayi. Django UI data chupistundi, background worker data update chestundi.
 
@@ -66,6 +66,7 @@ flowchart TB
     end
     subgraph storage [Storage]
         SQLite[(db.sqlite3)]
+        Redis[(Redis optional Celery broker)]
     end
     Browser --> Views
     Admin --> Models
@@ -75,6 +76,7 @@ flowchart TB
     Service --> Models
     Service --> Alerts
     Models --> SQLite
+    Redis -.->|future Celery path| BG
 ```
 
 ### When Is a Server UP or DOWN?
@@ -83,7 +85,9 @@ flowchart TB
 
 **DOWN (Offline) ante** site problem undi ani ardam. Idi jaragadaniki moodu reasons unnayi: timeout — server respond cheyyaledu; wrong status code — 500, 502, 404 lanti errors; connection error — DNS fail, server refuse, network problem.
 
-Simple ga cheppali ante mowa: URL ki request pampamu — 200 vasthe "UP", timeout or error vasthe "DOWN — mail pamputamu."
+**Important — email immediately radu:** Oka check DOWN aithe mail pampeyam. System **two-strike** rule follow chestundi: first DOWN ni log chestundi matrame; next 5-min cycle lo kuda DOWN unte confirmed outage ani email pamputundi. Idi false alarms tagginchadaniki.
+
+Simple ga cheppali ante: URL ki request — 200 vasthe "UP". Error vasthe "DOWN" mark. **Rendu consecutive DOWN checks** tarvata matrame mail.
 
 ---
 
@@ -121,7 +125,7 @@ Celery kuda setup undi kani currently use avvatledu. Future lo `celery -A server
 
 ### After Starting — What to Do
 
-Browser lo `http://127.0.0.1:8000/` open cheyandi — main dashboard kanipistundi. "Add Website" click chesi URL, alert email, expected status code enter cheyandi. Background monitor 60 seconds lopala automatic ga check start chestundi. Admin panel `http://127.0.0.1:8000/admin/` lo superuser login tho full data manage cheyochu.
+Browser lo `http://127.0.0.1:8000/` open cheyandi — main dashboard kanipistundi. "Add Website" click chesi URL, alert email, expected status code enter cheyandi. Background monitor **prathi 5 minutes** ki automatic ga check start chestundi. Admin panel `http://127.0.0.1:8000/admin/` lo superuser login tho full data manage cheyochu.
 
 ---
 
@@ -133,7 +137,7 @@ Mowa, project lo prathi file oka specific pani chestundi. Ikkada folder wise exp
 
 `manage.py` ante Django project ki main entry point. Migrations, runserver, createsuperuser — anni Django commands ee file dwara run avtayi.
 
-`background_monitor.py` ante **monitoring heart** mowa. Ee file lekunte automatic checks jaragavu. Prathi 60 seconds ki loop run avtundi, parallel ga sites check chestundi. Ee file chala important — interview lo definitely adugutaru.
+`background_monitor.py` ante **monitoring heart** mowa. Ee file lekunte automatic checks jaragavu. **Prathi 5 minutes (300s)** ki loop run avtundi — `settings.MONITORING_INTERVAL` / `.env` nundi. Parallel ga sites check chestundi. Ee file chala important — interview lo definitely adugutaru.
 
 `start_all.bat` ante Windows batch file — Django server and background monitor rendu okesari start cheyadaniki. Double-click cheste rendu command windows open avtayi.
 
@@ -209,7 +213,7 @@ Database lo 5 tables unnayi mowa. Prathi table oka specific purpose ki. Intervie
 
 Website table lo main monitored URLs store avtayi. Oka website add chesinappudu name, URL, description, status (active/inactive/maintenance), timeout (default 30 seconds), expected status code (default 200), alert email — ivi save avtayi.
 
-Website model lo `check_interval` field kuda undi — default 300 seconds (5 minutes). Kani **important gap** — ee field database lo store avtundi kani background worker actually use cheyadu. Worker prathi 60 seconds ki check chestundi.
+Website model lo `check_interval` field kuda undi — default 300 seconds (5 minutes). Background worker global ga `MONITORING_INTERVAL` (default 300) use chestundi. Per-website interval future enhancement — currently anni sites same 5-min global cycle lo check avtayi.
 
 Website model lo 3 useful properties unnayi. `is_online` ante latest check result chusi online or offline decide chestundi. `last_check_time` ante last check eppudu jarigindo chupistundi. `uptime_percentage` ante last 20 checks lo enni successful — adi percentage lo calculate chestundi.
 
@@ -225,7 +229,7 @@ Smart feature undi — prathi check save ayyaka, dani kante purana checks delete
 
 ### AlertLog Table
 
-AlertLog ante pamputunna alert emails history. Oka site DOWN aithe prathi minute mail pampute spam avtundi kada — anduke 5 minutes lo oka sari matrame DOWN alert pamputundi. `should_send_alert()` method ee check chestundi.
+AlertLog ante pamputunna alert emails history. **Two-strike rule:** first DOWN check lo mail radu; second consecutive DOWN (next 5-min cycle) lo matrame DOWN alert vastundi. Tarvata site recover avvakunda DOWN undina, same outage ki repeat mail radu (`consecutive_failures == 2` only). Extra safety ki `should_send_alert()` cooldown kuda undi — default 5 minutes lo duplicate type alert skip.
 
 Alerts dismiss cheyadaniki `is_cleared` field undi — dashboard lo kanipinchakunda hide cheyochu.
 
@@ -247,13 +251,15 @@ Ee section chala important mowa — "monitoring ela work avtundi?" ante ee story
 
 User dashboard lo kotha website add chestadu. Form submit ayyaka data SQLite database lo Website table lo save avtundi. Django signal fire avtudi — confirmation email alert email ki vastundi.
 
-Meanwhile, `background_monitor.py` prathi 60 seconds ki oka cycle run chestundi. Cycle start ayyaka, database nundi active websites (`status='active'`) and active internal apps (`is_active=True`) fetch chestundi.
+Meanwhile, `background_monitor.py` **prathi 5 minutes** ki oka cycle run chestundi. Cycle start ayyaka, database nundi active websites (`status='active'`) and active internal apps (`is_active=True`) fetch chestundi.
 
 Tarvata ThreadPoolExecutor use chesi 10 parallel threads lo checks run chestundi. Oka thread oka site check chestundi — slow avvakunda.
 
 Prathi thread `MonitoringService.check_website()` or `check_internal_app()` call chestundi. Ee function monitored URL ki HTTP GET request pampistundi — `requests.get(url, timeout=30)`. Response time measure chestundi. Status code expected code tho compare chestundi.
 
-Result `MonitoringCheck` table lo save avtundi. Site online unte — just save, alert emi radu. Site offline unte — `handle_website_alerts()` call avtundi. Website active unte and 5 minutes lo same alert pampeyaledu ante — DOWN alert email pamputundi via SMTP. AlertLog lo record create avtundi.
+Result `MonitoringCheck` table lo save avtundi. Site online unte — just save, alert emi radu. Site offline unte — `handle_website_alerts()` call avtundi.
+
+**Two-strike email logic:** Recent checks lo consecutive failures count chestundi. Failure count == 1 → only log, no mail. Failure count == 2 → confirmed DOWN → SMTP email + AlertLog. Failure count >= 3 → already alerted, silent until recovery then new outage.
 
 Dashboard latest checks database nundi read chesi stats chupistundi — uptime %, response time, online/offline status.
 
@@ -266,30 +272,36 @@ sequenceDiagram
     participant DB as SQLite
     participant SMTP as Email SMTP
 
-    loop Every 60 seconds
+    loop Every 300 seconds (5 min)
         BG->>DB: Fetch active websites and internal apps
         BG->>TPE: Submit parallel check jobs
         TPE->>MS: check_website or check_internal_app
         MS->>HTTP: requests.get with timeout
         HTTP-->>MS: response or error
         MS->>DB: Create MonitoringCheck record
-        alt is_online is False and website active
+        alt is_online False and consecutive failures == 2
             MS->>DB: AlertLog.should_send_alert check
-            MS->>SMTP: send_mail DOWN alert
+            MS->>SMTP: send_mail CONFIRMED DOWN alert
             MS->>DB: Log AlertLog
+        else first failure only
+            Note over MS: Log only — no email yet
         end
     end
 ```
 
-### When a Site Goes DOWN — Detailed Story
+### When a Site Goes DOWN — Detailed Story (Interview Gold)
 
-Background monitor loop run avtundi. Active websites list teesukuntundi. ThreadPool lo prathi site ki thread assign avtundi. `requests.get()` pampistundi — timeout, connection error, or wrong status code vasthe `is_online = False` set avtundi. MonitoringCheck record database lo save avtundi with error details.
+**Minute 0:** Monitor HTTP GET pampistundi. Timeout / 500 / connection error → `is_online=False`. MonitoringCheck save. Consecutive failures = 1. **Mail radu** — temporary blip avvochu.
 
-`handle_website_alerts()` check chestundi — website maintenance mode lo leda? Maintenance lo unte alert skip. Offline unte — last 5 minutes lo same alert pampeyaleda? Ledu ante email pamputundi. Dashboard lo site RED offline ga kanipistundi.
+**Minute 5:** Malli check. Malli DOWN → consecutive failures = 2. Ippudu confirmed outage. `AlertLog.send_alert()` → Gmail SMTP → admin ki email. Dashboard RED offline.
+
+**Minute 10, 15...:** Inka DOWN unte consecutive = 3, 4... Email malli radu (same outage ki spam ledu). Site UP ayyi malli DOWN aithe cycle malli start — first fail silent, second fail email.
+
+**Maintenance mode:** `website.status = 'maintenance'` unte checks jaragavochu kani alerts skip.
 
 ### When You Add a New Website
 
-Form fill chesi submit chestavu. WebsiteForm validate chesi database lo save chestundi. Signal fire avtundi — "new website added" confirmation email vastundi. Next monitoring cycle (60 seconds lopala) automatic ga kotha website pick up chestundi. Manual ga emi cheyalsina avasaram ledu.
+Form fill chesi submit chestavu. WebsiteForm validate chesi database lo save chestundi. Signal fire avtundi — "new website added" confirmation email vastundi. Next monitoring cycle (**5 minutes lopala**) automatic ga kotha website pick up chestundi. Manual ga emi cheyalsina avasaram ledu.
 
 ### Manual Check Button
 
@@ -317,7 +329,7 @@ Monitored URLs ki direct HTTP GET requests — `requests` library use chestundi.
 
 Email alerts kosam SMTP use chestundi — default Gmail (`smtp.gmail.com:587` with TLS). `.env` lo email credentials configure cheyali.
 
-Redis Celery broker kosam setup undi kani production lo actively use avvatledu.
+Redis Celery broker kosam setup undi. **Honest answer for interview:** Active monitoring path Redis use cheyadu — `background_monitor.py` + SQLite. Redis docker-compose lo undi future Celery Beat/Worker scaling kosam. Currently `CELERY_TASK_ALWAYS_EAGER=True` so Celery tasks in-process run avtayi, Redis mandatory kadu local run ki.
 
 ---
 
@@ -339,7 +351,20 @@ Bootstrap 5 and Font Awesome ante dashboard UI — CDN nundi load avtayi. Nice l
 
 `python-decouple` ante `.env` file nundi secrets safe ga read cheyadaniki — passwords code lo undavu.
 
-Celery and Redis ante async task queue — future scaling kosam setup chesamu kani currently `background_monitor.py` primary worker.
+Celery and Redis ante async task queue — **future scaling kosam** docker-compose + settings lo setup. Currently primary worker `background_monitor.py` (ThreadPoolExecutor + sleep). Interview lo cheppu: "Redis is the Celery message broker for the planned async path; production checks today run via a dedicated background process."
+
+### Where Is Redis Used? (Clear Interview Answer)
+
+| Place | Role |
+|-------|------|
+| `settings.py` `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND` | Points Celery at Redis |
+| `docker-compose.yml` `redis` service | Runs Redis 7 Alpine container |
+| `requirements.txt` `redis` + `celery` | Client libraries |
+| `server_checker/celery.py` beat schedule | Would enqueue checks every 300s via Redis |
+
+**Why Redis?** Celery workers need a broker to hold queued tasks. Redis is fast in-memory store — perfect as a queue. Without Redis, Celery Beat cannot hand work to workers across processes/machines.
+
+**Why not used every day now?** Design chose a simpler reliable path first: one `background_monitor.py` loop. Fewer moving parts for a small deployment. Redis stays ready when you scale to many workers or multi-server deploys.
 
 Docker and docker-compose ante containerized deployment — production lo easy deploy.
 
@@ -353,23 +378,21 @@ SMTP/Gmail ante email alerts — site DOWN aithe mail vastundi.
 
 ## 8. Timing — How Often Things Happen
 
-Idi interview lo chala important topic mowa. Configured values and actually used values madhya difference undi — idi cheppite interviewer impress avtadu.
+Idi interview lo chala important topic mowa.
 
-Background monitor **prathi 60 seconds** ki oka full check cycle run chestundi. Ee value `background_monitor.py` lo hardcoded undi — `time.sleep(60)`. `.env` lo `MONITORING_INTERVAL=300` ani undi kani actually use avvatledu. Website form lo per-site `check_interval` (default 300 seconds) kuda database lo store avtundi kani worker ignore chestundi. So form lo 5 minutes ani set chesina, actual ga prathi 60 seconds ki check avtundi — ee gap fix cheyali production ki.
+Background monitor **prathi 300 seconds (5 minutes)** ki oka full check cycle run chestundi. Value `.env` → `MONITORING_INTERVAL=300` → `settings.MONITORING_INTERVAL` → `background_monitor.py` lo `time.sleep(CHECK_INTERVAL)`.
 
-HTTP request timeout per website — default 30 seconds. Ee value actually use avtundi — `requests.get(url, timeout=website.timeout)`.
+**Two-strike alert timing:**
+- Check interval = 5 min
+- First DOWN → no email
+- Second DOWN (~10 min after first failure started) → email once
+- Further DOWNs in same outage → no repeat email
 
-Alert cooldown — 5 minutes. Oka site DOWN aithe 5 minutes lo oka sari matrame mail pamputundi. Spam prevention.
+HTTP request timeout per website — default 30 seconds. Actually use avtundi — `requests.get(url, timeout=website.timeout)`.
 
-Check history — last 20 checks per target retain avtayi. Dani kante purana checks automatic ga delete avtayi.
+Alert cooldown — `MonitoringSettings.alert_cooldown_minutes` (default 5) — extra duplicate guard beyond two-strike.
 
-Stats calculation — last 20 checks base chesi uptime % calculate chestundi.
-
-Dashboard alerts — last 24 hours alerts kanipistayi.
-
-ThreadPool — 10 parallel workers hardcoded. MonitoringSettings lo `max_concurrent_checks=10` undi kani worker adi read cheyadu.
-
-Celery beat schedule 300 seconds configure chesamu kani Celery production lo run avvatledu.
+Check history — last 20 checks per target. Stats same 20-check window. Dashboard page auto-refresh — 5 minutes (`base.html` 300000 ms). ThreadPool — 10 parallel workers. Celery beat also 300s (backup path, not primary).
 
 ---
 
@@ -377,31 +400,25 @@ Celery beat schedule 300 seconds configure chesamu kani Celery production lo run
 
 ### What Is Good About This Project
 
-Architecture simple ga undi — interview lo explain cheyadaniki easy, kotha person ki ardam avvadaniki easy. ThreadPoolExecutor valla 30+ sites fast ga parallel check avtayi. Email alerts ki 5-minute spam protection undi — oka site down aithe flood of mails radu. Website and InternalApp hierarchy undi — main site and API/admin separate ga monitor cheyochu. Dashboard, Django Admin, JSON API — moodu interfaces unnayi. Docker and Jenkins ready — deploy path undi. Check history auto-prune avtundi — database size control lo untundi. Maintenance mode undi — planned downtime lo alerts ravu. Manual check button undi — instant test cheyochu. Alerts dismiss cheyochu dashboard lo.
+Architecture simple ga undi — interview lo explain cheyadaniki easy. ThreadPoolExecutor valla 30+ sites parallel check. **Two-strike email** — false positive blips ki mail radu; confirmed outage (~10 min) tarvata matrame alert. Website and InternalApp hierarchy. Dashboard, Django Admin, JSON API. Docker and Jenkins ready. Check history auto-prune. Maintenance mode. Manual check button. Alerts dismiss.
 
 ### Problems and How to Fix Them
 
-Per-website `check_interval` ignore avtundi — anni sites prathi 60 seconds ki check avtayi regardless of config. Fix: last check time track chesi, `check_interval` satisfy ayyaka matrame check cheyali.
+Per-website `check_interval` still not honored individually — all sites share global `MONITORING_INTERVAL`. Fix: track last check time and skip until each site's interval elapsed.
 
-`MONITORING_INTERVAL` env variable use avvatledu — misleading config. Fix: `background_monitor.py` lo hardcoded 60 badulu `settings.MONITORING_INTERVAL` read cheyali.
+Recovery emails pamputledu — `send_recovery_email` field undi kani logic ledu. Fix: previous offline → current online transition detect chesi recovery email.
 
-Recovery emails pamputledu — `send_recovery_email` field undi kani logic ledu. Fix: previous check offline, current check online — transition detect chesi recovery email pamputali.
+SQLite parallel writes ki problem — scale ayyaka lock. Fix: PostgreSQL.
 
-SQLite parallel writes ki problem — scale ayyaka database lock avvochu. Fix: production lo PostgreSQL migrate cheyali.
+Dashboard lo login ledu. Fix: `@login_required`.
 
-Dashboard lo login ledu — anyone `http://127.0.0.1:8000` access cheyochu. Fix: `@login_required` decorator add chesi user accounts create cheyali.
+`CORS_ALLOW_ALL_ORIGINS = True` — production lo restrict.
 
-`CORS_ALLOW_ALL_ORIGINS = True` — security risk production lo. Fix: specific domains matrame allow cheyali.
+Celery configured kani primary path kadu — confusion. Fix: switch to Celery Beat OR document clearly (we document Redis as future broker).
 
-Celery configured kani use avvatledu — confusion create chestundi. Fix: either remove cheyali or Celery Beat primary worker ga switch cheyali.
+Celery `check_single_website` task bug — calls `run_monitoring_cycle()` instead of `check_website()`.
 
-Celery `check_single_website` task lo bug — `check_website()` badulu `run_monitoring_cycle()` call avtundi. Fix: correct method call cheyali.
-
-Unit tests levu — Jenkins test stage commented out. Fix: Django TestCase tho models, services, views test cheyali.
-
-`custom.css` link cheyyaledu templates lo — unused file. Fix: `base.html` lo link cheyali or file delete cheyali.
-
-Production lo `DEBUG=True` default — security risk. `SECRET_KEY` insecure default — change cheyali. HTTPS ledu — Nginx reverse proxy add cheyali.
+Unit tests levu. `custom.css` unused. Production DEBUG/SECRET_KEY/HTTPS hardening needed.
 
 ---
 
@@ -409,105 +426,97 @@ Production lo `DEBUG=True` default — security risk. `SECRET_KEY` insecure defa
 
 Mowa, ee questions interview lo adagochu. Paragraph format lo answer chadivithe easy ga cheppagalavu.
 
-**Q: What does this project do?**
+**Q: What does this project do? (30-second elevator pitch)**
 
-Answer: It's a Django-based HTTP uptime monitoring system. I configure website URLs, and the system periodically checks them using HTTP GET requests. If a site goes down, it sends email alerts. There's a dashboard showing uptime percentage and response times. (Telugu: Websites monitor chestundi, DOWN aithe mail pamputundi.)
+Answer: I built a Django-based HTTP uptime monitoring system. You add website and API URLs, a background worker probes them every 5 minutes in parallel, and if a target stays down for two consecutive checks (~10 minutes), it emails an alert. The dashboard shows online/offline status, response time, and uptime from the last 20 checks. (Resume line: "Django HTTP health checker with parallel probes, two-strike email alerts, and uptime dashboard.")
 
 **Q: How do you know a server is UP or DOWN?**
 
-Answer: I send an HTTP GET request to the configured URL. If the connection succeeds within the timeout and the status code matches the expected code (usually 200), the server is UP. If there's a timeout, connection error, or wrong status code, it's DOWN. (Telugu: URL ki request — 200 vasthe UP, error vasthe DOWN.)
+Answer: I send an HTTP GET to the URL with a configurable timeout (default 30s). If the status code matches the expected code (usually 200), it's UP. Timeout, connection error, or wrong status → DOWN. We do not monitor CPU/RAM — only HTTP reachability, like a lightweight UptimeRobot clone.
+
+**Q: Walk me through what happens when a website goes down.**
+
+Answer: At minute 0 the worker gets a failed request, saves a MonitoringCheck with is_online=False, counts consecutive failures = 1, and does **not** email — that avoids alerting on a one-off blip. Five minutes later it checks again. If still down, consecutive failures = 2, so we send one SMTP alert and log it in AlertLog. Further failures in the same outage do not spam. If it recovers and fails again later, the two-strike cycle restarts. Maintenance mode skips alerts entirely.
 
 **Q: Why two separate processes?**
 
-Answer: Django handles the UI — it needs to respond fast to users. HTTP health checks are blocking — each can take up to 30 seconds. If I run checks inside Django, the dashboard would freeze. So I use a separate `background_monitor.py` process for checks while Django handles the UI. (Telugu: UI ki checks ki separate — UI slow avvadu.)
+Answer: Django serves the UI and must stay responsive. Each health check can block up to 30 seconds. Running dozens of checks inside request threads would freeze the dashboard. So Django handles CRUD/API, and `background_monitor.py` owns the probe loop.
 
 **Q: Why ThreadPoolExecutor?**
 
-Answer: With 30+ websites, checking one by one would take too long — maybe 15 minutes per cycle. ThreadPoolExecutor runs 10 checks in parallel, so the full cycle completes in about 90 seconds. (Telugu: Parallel ga 10 sites — fast.)
+Answer: Sequential checks for 30+ sites with 30s timeouts could take many minutes per cycle. Ten parallel workers finish a cycle much faster without overloading SQLite or remote hosts.
 
 **Q: How do you prevent alert spam?**
 
-Answer: `AlertLog.should_send_alert()` checks if the same alert was sent for the same website in the last 5 minutes. If yes, it skips sending. So even if a site is down for an hour, you get at most one email every 5 minutes. (Telugu: 5 min lo oka mail matrame.)
+Answer: Two layers. First, **two-strike confirmation** — email only when consecutive_failures == 2. Second, **AlertLog.should_send_alert()** cooldown (default 5 minutes) so duplicate alert types are not resent in the window.
+
+**Q: Where do you use Redis and why?**
+
+Answer: Redis is configured as the Celery broker and result backend (`CELERY_BROKER_URL=redis://localhost:6379/0`) and runs as a service in docker-compose. Celery would push periodic check tasks through Redis so workers can scale horizontally. **Today the live path does not require Redis** — checks run in `background_monitor.py`. Redis is there for the production scaling path. Being honest about this shows you understand architecture trade-offs.
+
+**Q: Why not use Redis for storing check status?**
+
+Answer: Check results and alert history need durable, queryable storage for the dashboard and uptime %. SQLite (or PostgreSQL in prod) fits that. Redis shines as a fast queue/cache, not as our primary history store.
 
 **Q: What database and why?**
 
-Answer: SQLite for development — no setup, file-based, perfect for local dev. For production with parallel writes and scale, I'd migrate to PostgreSQL. (Telugu: Dev ki SQLite, prod ki PostgreSQL.)
+Answer: SQLite for development — zero setup, file-based. For production with concurrent writes I'd migrate to PostgreSQL.
 
 **Q: Explain the data model.**
 
-Answer: Website is the main monitored URL. InternalApp is a child endpoint under a website — like an API or admin panel. MonitoringCheck stores each probe result — online/offline, response time. AlertLog tracks sent emails with spam protection. MonitoringSettings is global config. Chain: Website → InternalApp → MonitoringCheck → AlertLog.
-
-**Q: What happens when a site goes DOWN?**
-
-Answer: Background monitor runs a check cycle. `MonitoringService` sends HTTP GET. Request fails or wrong status → `is_online=False`. Result saved in MonitoringCheck. `handle_website_alerts()` checks if site is active and if 5-min cooldown passed. Then `send_mail()` sends DOWN alert. AlertLog records it. Dashboard shows offline.
+Answer: Website is the top-level monitored URL. InternalApp is a child endpoint (API, admin, frontend). MonitoringCheck stores each probe. AlertLog stores sent emails. MonitoringSettings holds global flags. Chain: Website → InternalApp → MonitoringCheck / AlertLog.
 
 **Q: What is Celery doing here?**
 
-Answer: Celery is configured with Redis broker and 300-second beat schedule as an alternative async path. But it's NOT the primary worker — `background_monitor.py` with ThreadPoolExecutor is what actually runs. Celery has `CELERY_TASK_ALWAYS_EAGER=True` so tasks would run synchronously anyway. (Telugu: Setup undi kani background_monitor use avtundi.)
+Answer: Celery + Redis + beat schedule (300s) is an alternate async design. Primary worker is still `background_monitor.py`. `CELERY_TASK_ALWAYS_EAGER=True` makes Celery tasks run synchronously if invoked — useful for local/dev without a live broker.
 
 **Q: How would you scale this?**
 
-Answer: PostgreSQL instead of SQLite. Celery Beat as primary scheduler. Multiple workers. Redis for task queue. Add dashboard authentication. Nginx + Gunicorn instead of Django dev server. Fix per-website check intervals. Add recovery emails. Docker Swarm or Kubernetes for horizontal scaling.
+Answer: PostgreSQL; make Celery Beat the scheduler and workers consume via Redis; multiple monitor replicas; login on the dashboard; Nginx + Gunicorn; per-site intervals; recovery emails; container orchestration (Swarm/K8s).
 
-**Q: Website vs InternalApp difference?**
+**Q: Website vs InternalApp?**
 
-Answer: Website is top-level — like `https://mysite.com`. InternalApp is child — like `https://mysite.com/api/health`. Both checked independently. Alerts go to parent website's email.
+Answer: Website = `https://mysite.com`. InternalApp = `https://api.mysite.com/health`. Checked independently; alerts go to the parent website's email.
 
-**Q: How is uptime percentage calculated?**
+**Q: How is uptime calculated?**
 
-Answer: Last 20 MonitoringCheck records for that website. Count how many were online. Formula: (online_count / total_count) × 100. Same 20-check window for stats.
+Answer: Last 20 MonitoringCheck rows → (online_count / total) × 100.
 
 **Q: What happens when you add a website?**
 
-Answer: Form submit → WebsiteForm validates → save to DB → signal fires → confirmation email → next cycle (within 60s) monitor picks it up automatically.
+Answer: Form save → signal confirmation email → picked up on the next 5-minute cycle (or immediately via Check Now).
 
-**Q: What is maintenance mode?**
+**Q: Maintenance mode?**
 
-Answer: Set `website.status = 'maintenance'`. Worker still checks but `handle_website_alerts()` skips sending alerts. Useful for planned downtime.
-
-**Q: How does JSON API work?**
-
-Answer: `GET /api/status/` returns JSON with global stats and per-website status, uptime, response time. No auth currently.
+Answer: status='maintenance' → checks may still run, alerts suppressed for planned downtime.
 
 **Q: Development vs production email?**
 
-Answer: Dev: console backend — emails print to terminal. Prod: SMTP with Gmail credentials from `.env`.
+Answer: Dev can use console backend (prints to terminal). Prod uses SMTP (e.g. Gmail App Password) from `.env`.
 
-**Q: Why only 20 check records kept?**
+**Q: Why keep only 20 checks?**
 
-Answer: `MonitoringCheck.save()` auto-deletes older checks. Keeps DB small, queries fast. No separate cleanup job needed.
+Answer: Auto-prune in MonitoringCheck.save() keeps DB small and queries fast.
 
-**Q: What is Django Admin for?**
+**Q: Docker?**
 
-Answer: `/admin/` with superuser — view/edit all data. More powerful than dashboard for inspection.
+Answer: Three services — web (Django), monitor (background_monitor.py), redis (Celery broker). `docker-compose up -d`.
 
-**Q: Docker deployment?**
+**Q: What would you improve next?**
 
-Answer: docker-compose has 3 services: web (Django 8000), monitor (background_monitor.py), redis. Share codebase and `.env`.
+Answer: Recovery emails, auth, PostgreSQL, honor per-website intervals, unit tests, fix Celery single-site task, restrict CORS, HTTPS.
 
-**Q: Django signals?**
+**Q: Resume bullet ideas?**
 
-Answer: `signals.py` — website created → confirmation email. Website deleted → removal email. Loaded via `apps.py` ready().
-
-**Q: Manual check endpoint?**
-
-Answer: `POST /website/<id>/check/` — instant check, JSON response. No waiting 60 seconds.
-
-**Q: What improvements would you make?**
-
-Answer: Per-website intervals, recovery emails, auth, PostgreSQL, fix Celery, unit tests, restrict CORS, wire MonitoringSettings.
+Answer:
+- Built a Django uptime monitor with parallel HTTP health checks every 5 minutes
+- Implemented two-strike downtime confirmation to cut false-positive email alerts
+- Designed dual-process architecture (web UI + background worker) with optional Celery/Redis scaling path
+- Delivered dashboard metrics (uptime %, latency, status) and SMTP alerting with alert history
 
 **Q: Project folder structure?**
 
-Answer: Root has entry points. `server_checker/` is config. `monitoring/` is logic. `templates/` is UI. DevOps files for Docker/Jenkins.
-
-**Q: What is python-decouple?**
-
-Answer: Reads `.env` safely. `config('SECRET_KEY')` etc. Secrets not in code.
-
-**Q: Alert dismiss feature?**
-
-Answer: `is_cleared=True` hides from dashboard. Data stays in DB. `clear_all_alerts` dismisses all.
+Answer: Root entry points (`manage.py`, `background_monitor.py`). `server_checker/` config. `monitoring/` business logic. `templates/` UI. Docker/Jenkins for deploy.
 
 ---
 
@@ -521,15 +530,11 @@ Ee file lekunte monitoring work avvadu mowa. File start lo Django setup avtundi 
 
 `run_professional_monitoring()` oka full cycle. Active websites and internal apps database nundi fetch. ThreadPoolExecutor (10 workers) lo prathi target submit. Parallel execution — fast.
 
-`if __name__ == "__main__"` block lo infinite loop — `while True`: run cycle, `time.sleep(60)`, repeat. Ee file run chesinappudu ee loop nadustune untundi.
+`if __name__ == "__main__"` block lo infinite loop — `while True`: run cycle, `time.sleep(CHECK_INTERVAL)` where CHECK_INTERVAL comes from `MONITORING_INTERVAL` (default 300 = 5 minutes).
 
 ### `monitoring/services.py` — Core Logic
 
-`MonitoringService` class HTTP checks and alerts handle chestundi. `check_website()` — `requests.get()`, response time measure, status compare, MonitoringCheck save, `handle_website_alerts()` call. Timeout or error → failed check record + alert.
-
-`handle_website_alerts()` — maintenance/inactive skip. Offline + cooldown passed → DOWN email. Online → nothing (recovery not implemented).
-
-`MonitoringStats` — dashboard stats. `get_website_stats()` last 20 checks. `get_global_stats()` all sites count.
+`MonitoringService` — HTTP checks + two-strike alerts. `check_website()` / `check_internal_app()` probe with `requests.get()`, save MonitoringCheck, call alert handlers. Handlers require **exactly 2 consecutive failures** before SMTP email. `MonitoringStats` builds dashboard numbers from last 20 checks.
 
 ### `monitoring/models.py` — Database
 
@@ -545,7 +550,7 @@ Browser URLs ni view functions ki connect chestundi. `app_name = 'monitoring'` f
 
 ### `server_checker/settings.py` — Configuration
 
-SECRET_KEY, DEBUG, ALLOWED_HOSTS from `.env`. SQLite database. Email SMTP config. Celery Redis. CORS all origins. MONITORING_INTERVAL defined but unused. Dev email: console backend. Prod: SMTP.
+SECRET_KEY, DEBUG, ALLOWED_HOSTS from `.env`. SQLite database. Email SMTP config. Celery Redis broker URLs. CORS. **MONITORING_INTERVAL=300 used by background_monitor**. Dev email can be console; prod SMTP.
 
 ---
 
@@ -571,21 +576,23 @@ Production ki deploy cheyadaniki: strong SECRET_KEY, DEBUG=False, ALLOWED_HOSTS 
 
 ## Quick Summary for Interview
 
-**One line:** Django HTTP uptime monitor — parallel background checks, email alerts, real-time dashboard.
+**One line:** Django HTTP uptime monitor — parallel checks every 5 minutes, two-strike email alerts, real-time dashboard.
 
-**Tech:** Python, Django 4.2.7, SQLite, requests, ThreadPoolExecutor, Bootstrap, SMTP.
+**Tech:** Python, Django 4.2.7, SQLite, requests, ThreadPoolExecutor, Bootstrap, SMTP; Redis+Celery ready for scale.
 
-**Architecture:** Two processes — Django (UI) + background_monitor.py (checks every 60s, 10 parallel).
+**Architecture:** Two processes — Django (UI) + background_monitor.py (every 300s, 10 parallel workers).
 
-**UP/DOWN:** HTTP GET → 200 within timeout = UP. Timeout/error/wrong code = DOWN → email.
+**UP/DOWN:** HTTP GET → expected status within timeout = UP. Else DOWN. Email only after **2 consecutive DOWN** checks (~10 min).
+
+**Redis:** Celery message broker in docker-compose/settings — not on the hot path today; used when scaling with Celery workers.
 
 **Models:** Website → InternalApp → MonitoringCheck → AlertLog.
 
-**Start:** `.\start_all.bat` or docker-compose up -d.
+**Start:** `.\start_all.bat` or `docker-compose up -d`. Restart the Health Monitor window after code changes so the 5-min loop picks up.
 
-**Key gap to mention:** check_interval configured but worker uses hardcoded 60s — shows you know the codebase.
+**Resume tip:** Emphasize dual-process design, two-strike false-positive reduction, and clear path from SQLite+background worker → PostgreSQL+Celery+Redis.
 
-Mowa, ee document chadivithe project motham clear ga telustundi. Interview lo confidence tho explain cheyagalavu. Kotha person ki kuda ee guide chadivithe ardam avtundi. Good luck!
+Mowa, ee document chadivithe project motham clear ga telustundi. Interview lo confidence tho explain cheyagalavu. Good luck!
 
 ---
 
